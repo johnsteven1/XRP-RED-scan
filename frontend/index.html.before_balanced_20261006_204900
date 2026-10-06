@@ -9,8 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
-<link rel="stylesheet" href="css/balanced-mobile-ui.css">
-<link rel="stylesheet" href="css/final-ui-fix.css">
+<link rel="stylesheet" href="css/professional-moderate-ui.css">
 </head>
 <body>
 <div class="mobile-app">
@@ -45,19 +44,6 @@
                     <div><span class="stat-label">AVERAGE / SCAN</span><strong id="avgMissing">0.00</strong></div>
                 </article>
             </div>
-
-            <article class="panel dashboard-capacity">
-                <div class="capacity-copy">
-                    <span class="capacity-kicker">SCAN CAPACITY</span>
-                    <h2>Standard scanning is ready for deeper history</h2>
-                    <p>Choose from 1,000 to 30,000 transactions. Large Scan remains available for complete wallet history with live progress.</p>
-                </div>
-                <div class="capacity-range">
-                    <div class="capacity-range-top"><span>Standard</span><strong>1K — 30K</strong></div>
-                    <div class="capacity-track"><span></span></div>
-                    <div class="capacity-range-bottom"><span>Quick scans</span><span>Deep scans</span></div>
-                </div>
-            </article>
 
             <article class="panel overview-card">
                 <div class="overview-head">
@@ -96,42 +82,13 @@
                         <button class="clear-input" type="button" onclick="document.getElementById('walletAddress').value=''">Clear</button>
                     </div>
 
-                    <div class="scan-settings-grid">
-                        <div class="scan-setting">
-                            <label class="field-label">STANDARD SCAN SIZE</label>
-                            <div class="select-wrap">
-                                <select id="limit" aria-label="Standard scan transaction limit">
-                                    <option value="1000">1,000 transactions</option>
-                                    <option value="2000">2,000 transactions</option>
-                                    <option value="3000">3,000 transactions</option>
-                                    <option value="4000">4,000 transactions</option>
-                                    <option value="5000">5,000 transactions</option>
-                                    <option value="6000">6,000 transactions</option>
-                                    <option value="7000">7,000 transactions</option>
-                                    <option value="8000">8,000 transactions</option>
-                                    <option value="10000">10,000 transactions</option>
-                                    <option value="20000">20,000 transactions</option>
-                                    <option value="30000">30,000 transactions</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="scan-setting">
-                            <label class="field-label">SCAN MODE</label>
-                            <div class="select-wrap">
-                                <select id="scanMode" aria-label="Scan mode">
-                                    <option value="standard">Standard Scan</option>
-                                    <option value="large">Large Scan</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="scan-size-note">
-                        <span class="scan-size-note-icon">✓</span>
-                        <div>
-                            <strong>Standard capacity: up to 30,000 transactions</strong>
-                            <span>For deeper wallet history, use Large Scan with live progress tracking.</span>
-                        </div>
+                    <label class="field-label">TRANSACTION LIMIT</label>
+                    <div class="select-wrap">
+                        <select id="limit">
+                            <option value="100">1,000</option>
+                            <option value="500">500</option>
+                            <option value="1000">1,000</option>
+                        </select>
                     </div>
 
                     <label class="field-label">SCAN MODE</label>
@@ -148,22 +105,11 @@
                         <button class="scan-action stop" id="stopBtn" type="button" onclick="stopActiveScan()">Stop</button>
                     </div>
 
-                    <button class="large-scan-hidden" id="largeScanBtn" type="button" onclick="startLargeScan()">
-                        <span>Large Scan</span>
-                        <small>Full wallet history</small>
-                    </button>
+                    <button class="large-scan-hidden" id="largeScanBtn" type="button" onclick="startLargeScan()">Large Scan (All)</button>
 
-                    <div id="scanProgress" class="scan-progress" style="display:none;" aria-live="polite">
-                        <div class="progress-header">
-                            <div>
-                                <span class="progress-kicker">LIVE SCAN</span>
-                                <span class="progress-title">Scan in progress</span>
-                            </div>
-                            <span class="progress-percentage">0%</span>
-                        </div>
-                        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                            <div class="progress-bar"></div>
-                        </div>
+                    <div id="scanProgress" class="scan-progress" style="display:none;">
+                        <div class="progress-header"><span class="progress-title">Scan in progress</span><span class="progress-percentage">0%</span></div>
+                        <div class="progress-track"><div class="progress-bar"></div></div>
                         <div class="progress-stats"></div>
                         <div class="progress-status"></div>
                     </div>

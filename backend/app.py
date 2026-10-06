@@ -140,6 +140,8 @@ ALTERNATE_RPC_URLS = [
 
 # ==================== UPGRADE: NEW CONFIG ====================
 MAX_SCAN_LIMIT = 1000000
+STANDARD_SCAN_LIMITS = (1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 20000, 30000)
+
 WEBHOOK_TIMEOUT = 10
 COMPRESSION_THRESHOLD = 1024 * 500  # 500KB
 # ===========================================================
@@ -284,6 +286,68 @@ def scan_transactions_batch(wallet_address, marker=None, limit=BATCH_SIZE):
     except Exception as e:
         print(f"Error scanning batch: {e}")
         return None
+
+
+def scan_transactions_up_to_limit(wallet_address, requested_limit):
+    """
+    Retrieve up to requested_limit account transactions by following XRPL
+    account_tx pagination markers. XRPL limits each response to a page, so
+    large Standard Scan sizes must be assembled from multiple pages.
+    """
+    target = int(requested_limit)
+    collected = []
+    marker = None
+    page_number = 0
+
+    while len(collected) < target:
+        page_number += 1
+        remaining = target - len(collected)
+
+        # Keep each XRPL request at a safe page size. The server may return
+        # fewer records than requested; the marker tells us whether more exist.
+        page_limit = min(BATCH_SIZE, remaining)
+
+        result = scan_transactions_batch(
+            wallet_address,
+            marker=marker,
+            limit=page_limit
+        )
+
+        if not result:
+            raise RuntimeError(
+                f"XRPL returned no result while fetching page {page_number}"
+            )
+
+        page = result.get('transactions') or []
+        if not page:
+            break
+
+        collected.extend(page)
+
+        next_marker = result.get('marker')
+
+        # No marker means XRPL has reached the end of this account's history.
+        if not next_marker:
+            break
+
+        # Defensive guard against a repeated marker causing an infinite loop.
+        if next_marker == marker:
+            raise RuntimeError(
+                f"XRPL pagination marker did not advance on page {page_number}"
+            )
+
+        marker = next_marker
+
+        print(
+            f"Standard scan pagination: page={page_number}, "
+            f"fetched={len(page)}, total={len(collected)}/{target}"
+        )
+
+    return {
+        'transactions': collected[:target],
+        'marker': marker if len(collected) < target else None,
+        'has_more': bool(marker) and len(collected) >= target
+    }
 
 def is_valid_missing_tag_transaction(tx_data, tx_meta, wallet_address):
     """
@@ -764,6 +828,22 @@ def large_scan_worker(wallet_address, scan_id, max_transactions=None, callback=N
         rolling_preview = []
         
         while True:
+            # Respect user-controlled pause/stop state before fetching the next batch.
+            with scan_lock:
+                current_state = active_scans.get(scan_id, {}).get('status')
+            if current_state == 'paused':
+                time.sleep(0.5)
+                continue
+            if current_state == 'stopped':
+                return {
+                    'success': True,
+                    'scan_id': scan_id,
+                    'status': 'stopped',
+                    'processed': processed_count,
+                    'missing': missing_count,
+                    'total_amount': total_amount
+                }
+
             if max_transactions and processed_count >= max_transactions:
                 break
             
@@ -992,21 +1072,41 @@ def scan_wallet():
         requested_limit = data.get('limit', 1000)
         if requested_limit is None:
             requested_limit = 1000
-        limit = min(int(requested_limit), 10000000000)
+        try:
+            requested_limit = int(requested_limit)
+        except (ValueError, TypeError):
+            return jsonify({
+                "error": "limit must be a valid transaction count",
+                "supported_limits": list(STANDARD_SCAN_LIMITS)
+            }), 400
+
+        if requested_limit not in STANDARD_SCAN_LIMITS:
+            return jsonify({
+                "error": "Unsupported Standard Scan size",
+                "supported_limits": list(STANDARD_SCAN_LIMITS)
+            }), 400
+
+        limit = requested_limit
         
         if not wallet_address:
             return jsonify({"error": "Wallet address required"}), 400
         
         print(f"Scanning wallet: {wallet_address} with limit: {limit}")
         
-        result = scan_transactions_batch(wallet_address, limit=limit)
-        
-        if not result:
-            return jsonify({"error": "Failed to scan wallet"}), 500
-            
+        try:
+            result = scan_transactions_up_to_limit(wallet_address, limit)
+        except Exception as scan_error:
+            print(f"Standard scan pagination error: {scan_error}")
+            return jsonify({
+                "error": f"Failed to scan wallet: {str(scan_error)}"
+            }), 502
+
         transactions = result.get('transactions', [])
-        print(f"Found {len(transactions)} transactions")
-        
+        print(
+            f"Standard scan complete: fetched {len(transactions)} "
+            f"transactions for requested limit {limit}"
+        )
+
         missing_tag_txs = process_transactions_batch(transactions, wallet_address)
         
         if missing_tag_txs:
@@ -1044,8 +1144,9 @@ def scan_wallet():
             "summary": summary,
             "pagination": {
                 "limit": limit,
+                "returned": len(transactions),
                 "marker": result.get('marker'),
-                "has_more": result.get('marker') is not None
+                "has_more": result.get('has_more', False)
             },
             "validation_info": {
                 "method": "XRPL blockchain verification",
@@ -1172,17 +1273,23 @@ def pause_scan(scan_id):
             return jsonify({"message": "Scan paused", "scan_id": scan_id})
     return jsonify({"error": "Scan not found or not running"}), 404
 
+@app.route('/api/scan/stop/<scan_id>', methods=['POST'])
+def stop_scan(scan_id):
+    """Stop a running or paused scan while preserving its latest checkpoint."""
+    with scan_lock:
+        if scan_id in active_scans and active_scans[scan_id]['status'] in ('scanning', 'paused'):
+            active_scans[scan_id]['status'] = 'stopped'
+            return jsonify({"message": "Scan stopped", "scan_id": scan_id, "checkpoint_preserved": True})
+    return jsonify({"error": "Scan not found or already finished"}), 404
+
 @app.route('/api/scan/resume/<scan_id>', methods=['POST'])
 def resume_scan(scan_id):
     """Resume a paused scan"""
     with scan_lock:
         if scan_id in active_scans and active_scans[scan_id]['status'] == 'paused':
-            wallet_address = active_scans[scan_id]['wallet']
             active_scans[scan_id]['status'] = 'scanning'
-            
-            executor = ThreadPoolExecutor(max_workers=1)
-            executor.submit(large_scan_worker, wallet_address, scan_id, None, None)
-            
+            # The existing worker remains alive while paused and continues
+            # from its current checkpoint when the status changes back.
             return jsonify({"message": "Scan resumed", "scan_id": scan_id})
     return jsonify({"error": "Scan not found or not paused"}), 404
 

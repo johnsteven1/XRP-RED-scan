@@ -8,6 +8,9 @@ let scanPollInterval = null;
 let liveFilesInterval = null;
 let currentFiles = [];
 let currentScanId = null;
+let standardScanInProgress = false;
+let selectedScanLimit = 1000;
+const STANDARD_SCAN_LIMITS = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 10000, 20000, 30000];
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', async () => {
@@ -25,7 +28,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     document.getElementById('scanMode').addEventListener('change', (e) => {
         const mode = e.target.value;
-        document.getElementById('limit').disabled = mode === 'large';
+        const limit = document.getElementById('limit');
+        const largeButton = document.getElementById('largeScanBtn');
+
+        limit.disabled = mode === 'large';
+        if (largeButton) {
+            largeButton.classList.toggle('is-ready', mode === 'large');
+        }
+    });
+
+    document.getElementById('limit').addEventListener('change', (e) => {
+        selectedScanLimit = Number(e.target.value);
     });
 });
 
@@ -110,103 +123,179 @@ async function loadAnalytics() {
 // Scan Wallet
 async function scanWallet() {
     const address = document.getElementById('walletAddress').value.trim();
-    const limit = document.getElementById('limit').value;
+    const limit = Number(document.getElementById('limit').value);
     const mode = document.getElementById('scanMode').value;
-    
+
     if (!address) {
         showNotification('Please enter a wallet address', 'warning');
         return;
     }
-    
+
     if (!address.startsWith('r') || address.length < 25) {
         showNotification('Invalid XRP wallet address format', 'error');
         return;
     }
-    
+
     if (mode === 'large') {
-        startLargeScan();
+        await startLargeScan();
         return;
     }
-    
+
+    if (!STANDARD_SCAN_LIMITS.includes(limit)) {
+        showNotification('Please select a supported Standard Scan size', 'warning');
+        return;
+    }
+
+    if (standardScanInProgress) {
+        showNotification('A Standard Scan is already running', 'info');
+        return;
+    }
+
+    standardScanInProgress = true;
+    selectedScanLimit = limit;
+
+    const progressDiv = document.getElementById('scanProgress');
+    const scanBtn = document.getElementById('scanBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const stopBtn = document.getElementById('stopBtn');
+
     document.getElementById('loading').style.display = 'flex';
     document.getElementById('summarySection').style.display = 'none';
-    document.getElementById('scanBtn').disabled = true;
-    
+    scanBtn.disabled = true;
+    if (pauseBtn) pauseBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = true;
+
+    showStandardScanProgress(limit, 10, `Connecting to XRPL · fetching up to ${limit.toLocaleString()} transactions…`);
+
     try {
         const response = await fetch(`${API_BASE}/scan`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ address, limit: parseInt(limit) })
+            body: JSON.stringify({ address, limit })
         });
-        
+
+        showStandardScanProgress(limit, 85, `XRPL pages fetched · validating up to ${limit.toLocaleString()} transactions…`);
         const data = await response.json();
-        
+
         if (response.ok) {
+            showStandardScanProgress(limit, 100, 'Scan complete');
             displayResults(data);
             await refreshLogs();
             await loadAnalytics();
-            
+
             if (data.validation_info) {
-                console.log('Blockchain validation performed:', data.validation_info.checks_performed);
-                showNotification(`Blockchain-verified: Found ${data.transactions.length} transactions genuinely missing tags`, 'success');
+                showNotification(
+                    `Blockchain-verified: ${data.transactions.length.toLocaleString()} matching transactions found`,
+                    'success'
+                );
             } else {
-                showNotification(`Found ${data.transactions.length} transactions missing tags`, 'success');
+                showNotification(`Found ${data.transactions.length.toLocaleString()} matching transactions`, 'success');
             }
+
+            setTimeout(() => {
+                if (!activeScanId) progressDiv.style.display = 'none';
+            }, 1600);
         } else {
             showNotification(data.error || 'Scan failed', 'error');
+            progressDiv.style.display = 'none';
         }
     } catch (error) {
         showNotification('Network error: ' + error.message, 'error');
+        progressDiv.style.display = 'none';
     } finally {
         document.getElementById('loading').style.display = 'none';
-        document.getElementById('scanBtn').disabled = false;
+        scanBtn.disabled = false;
+        if (pauseBtn) pauseBtn.disabled = false;
+        if (stopBtn) stopBtn.disabled = false;
+        standardScanInProgress = false;
     }
+}
+
+function showStandardScanProgress(limit, percent, statusText) {
+    const progressDiv = document.getElementById('scanProgress');
+    if (!progressDiv) return;
+
+    progressDiv.style.display = 'block';
+    progressDiv.classList.add('standard-progress');
+
+    const safePercent = Math.max(0, Math.min(100, percent));
+    progressDiv.querySelector('.progress-title').textContent =
+        `Standard Scan · ${limit.toLocaleString()} transactions`;
+    progressDiv.querySelector('.progress-percentage').textContent = `${safePercent}%`;
+    progressDiv.querySelector('.progress-bar').style.width = `${safePercent}%`;
+    progressDiv.querySelector('.progress-track').setAttribute('aria-valuenow', safePercent);
+    progressDiv.querySelector('.progress-stats').innerHTML = `
+        <span>Target: ${limit.toLocaleString()}</span>
+        <span>Mode: Standard</span>
+        <span>Validation: XRPL</span>
+    `;
+    progressDiv.querySelector('.progress-status').textContent = statusText;
 }
 
 // Start Large Scan
 async function startLargeScan() {
     const address = document.getElementById('walletAddress').value.trim();
-    
+    const selectedLimit = Number(document.getElementById('limit').value) || 0;
+
     if (!address) {
         showNotification('Please enter a wallet address', 'warning');
         return;
     }
-    
-    if (!confirm(`🔍 Blockchain-Verified Large Scan\n\nThis will scan ALL transactions for ${address} with full XRPL validation.\n\n✅ Verifies:\n• Successful payments only (tesSUCCESS)\n• No DestinationTag\n• No Memos\n• Valid delivered amounts\n\nThis could take significant time for wallets with millions of transactions.\n\nDo you want to continue?`)) {
+
+    if (!confirm(`Blockchain-Verified Large Scan\n\nThis will scan the wallet with live progress tracking and XRPL validation.\n\nThe scan can continue through the complete wallet history. This may take longer for high-volume wallets.\n\nContinue?`)) {
         return;
     }
-    
-    showNotification('Starting blockchain-verified large scan...', 'info');
-    
+
+    showNotification('Starting blockchain-verified large scan…', 'info');
+
+    const progressDiv = document.getElementById('scanProgress');
+    progressDiv.style.display = 'block';
+    progressDiv.classList.remove('standard-progress');
+    progressDiv.querySelector('.progress-title').textContent = 'Large Scan · preparing';
+    progressDiv.querySelector('.progress-percentage').textContent = '0%';
+    progressDiv.querySelector('.progress-bar').style.width = '0%';
+    progressDiv.querySelector('.progress-track').setAttribute('aria-valuenow', '0');
+    progressDiv.querySelector('.progress-stats').innerHTML = `
+        <span>Mode: Large Scan</span>
+        <span>Target: ${selectedLimit ? selectedLimit.toLocaleString() : 'Full history'}</span>
+        <span>Validation: XRPL</span>
+    `;
+    progressDiv.querySelector('.progress-status').textContent = 'Starting scanner…';
+
     try {
+        const body = { address };
+        // A selected Standard size becomes a useful optional cap for a Large Scan.
+        // Selecting 30K therefore scans up to 30K while still using the large-scan
+        // worker and its live progress system.
+        if (selectedLimit > 0) {
+            body.max_transactions = selectedLimit;
+        }
+
         const response = await fetch(`${API_BASE}/scan/large`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ address })
+            body: JSON.stringify(body)
         });
-        
+
         const data = await response.json();
-        
+
         if (response.ok) {
             currentScanId = data.scan_id;
             activeScanId = data.scan_id;
-            showNotification(`Large scan started! ID: ${data.scan_id} (Blockchain-validated)`, 'success');
-            
-            // Show live files panel
+            showNotification(`Large scan started · ${data.scan_id}`, 'success');
+
             showLiveFilesPanel();
-            
-            // Start real-time file streaming
             startLiveFileStreaming(data.scan_id);
-            
-            // Start progress polling
             pollScanStatus(data.scan_id);
-            
-            // Show file explorer button
-            document.getElementById('explorerBtn').style.display = 'inline-flex';
+
+            const explorerBtn = document.getElementById('explorerBtn');
+            if (explorerBtn) explorerBtn.style.display = 'inline-flex';
         } else {
+            progressDiv.style.display = 'none';
             showNotification(data.error || 'Failed to start scan', 'error');
         }
     } catch (error) {
+        progressDiv.style.display = 'none';
         showNotification('Network error: ' + error.message, 'error');
     }
 }
@@ -390,7 +479,7 @@ function pollScanStatus(scanId) {
                     updateLiveFilesList(status.live_files, status);
                 }
                 
-                if (status.status === 'completed' || status.status === 'error') {
+                if (status.status === 'completed' || status.status === 'error' || status.status === 'stopped') {
                     clearInterval(scanPollInterval);
                     scanPollInterval = null;
                     
@@ -413,6 +502,8 @@ function pollScanStatus(scanId) {
                         }, 5000);
                     } else if (status.status === 'error') {
                         showNotification(`Scan error: ${status.error}`, 'error');
+                    } else if (status.status === 'stopped') {
+                        showNotification('Scan stopped. The latest checkpoint was preserved.', 'info');
                     }
                 }
             } else if (response.status === 404) {
@@ -643,25 +734,37 @@ async function downloadAllFiles() {
 // Update Scan Progress
 function updateScanProgress(status) {
     const progressDiv = document.getElementById('scanProgress');
-    const percent = status.progress || 0;
-    
+    if (!progressDiv) return;
+
+    const rawPercent = Number(status.progress || 0);
+    const percent = Math.max(0, Math.min(100, rawPercent));
+    const processed = Number(status.processed || 0);
+    const missing = Number(status.missing || 0);
+    const totalEstimate = Number(status.total_estimate || 0);
+    const target = totalEstimate > 0 ? totalEstimate : null;
+
+    progressDiv.style.display = 'block';
+    progressDiv.classList.remove('standard-progress');
+
+    progressDiv.querySelector('.progress-kicker').textContent =
+        status.status === 'completed' ? 'COMPLETE' : 'LIVE SCAN';
+    progressDiv.querySelector('.progress-title').textContent =
+        target ? `Large Scan · ${target.toLocaleString()} transactions` : 'Large Scan · full history';
     progressDiv.querySelector('.progress-percentage').textContent = `${percent.toFixed(1)}%`;
     progressDiv.querySelector('.progress-bar').style.width = `${percent}%`;
-    
-    const validationBadge = status.validation ? '<span class="validation-badge">🔗 Blockchain Verified</span>' : '';
-    
+    progressDiv.querySelector('.progress-track').setAttribute('aria-valuenow', percent.toFixed(1));
+
+    const targetText = target ? `Target: ${target.toLocaleString()}` : 'Target: Full history';
     progressDiv.querySelector('.progress-stats').innerHTML = `
-        <span>📊 Processed: ${status.processed?.toLocaleString() || 0}</span>
-        <span>⚠️ Missing: ${status.missing || 0}</span>
-        <span>💰 Total: ${(status.total_amount || 0).toFixed(2)} XRP</span>
-        ${validationBadge}
+        <span>Processed: ${processed.toLocaleString()}</span>
+        <span>${targetText}</span>
+        <span>Missing: ${missing.toLocaleString()}</span>
+        <span>Total: ${(Number(status.total_amount || 0)).toFixed(2)} XRP</span>
     `;
-    
-    progressDiv.querySelector('.progress-status').innerHTML = `Status: ${status.status} ${status.validation ? '| Blockchain Validation Active' : ''}`;
-    
-    if (status.status === 'completed' && status.downloads && status.downloads.length > 0) {
-        showFileDownloadPanel(status.downloads);
-    }
+
+    progressDiv.querySelector('.progress-status').innerHTML =
+        `<span class="status-dot ${status.status === 'completed' ? 'done' : ''}"></span>
+         ${status.status || 'working'}${status.validation ? ' · Blockchain validation active' : ''}`;
 }
 
 // Display Results
@@ -757,6 +860,12 @@ function displayResults(data) {
                </td>
            </tr>
     `).join('');
+    if (typeof showPage === 'function') {
+        const empty = document.getElementById('resultsEmpty');
+        if (empty) empty.style.display = 'none';
+        showPage('results');
+    }
+
 }
 
 // Download Data

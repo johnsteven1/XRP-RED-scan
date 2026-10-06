@@ -193,6 +193,68 @@ def scan_transactions_batch(wallet_address, marker=None, limit=BATCH_SIZE):
         print(f"Error scanning batch: {e}")
         return None
 
+
+def scan_transactions_up_to_limit(wallet_address, requested_limit):
+    """
+    Retrieve up to requested_limit account transactions by following XRPL
+    account_tx pagination markers. XRPL limits each response to a page, so
+    large Standard Scan sizes must be assembled from multiple pages.
+    """
+    target = int(requested_limit)
+    collected = []
+    marker = None
+    page_number = 0
+
+    while len(collected) < target:
+        page_number += 1
+        remaining = target - len(collected)
+
+        # Keep each XRPL request at a safe page size. The server may return
+        # fewer records than requested; the marker tells us whether more exist.
+        page_limit = min(BATCH_SIZE, remaining)
+
+        result = scan_transactions_batch(
+            wallet_address,
+            marker=marker,
+            limit=page_limit
+        )
+
+        if not result:
+            raise RuntimeError(
+                f"XRPL returned no result while fetching page {page_number}"
+            )
+
+        page = result.get('transactions') or []
+        if not page:
+            break
+
+        collected.extend(page)
+
+        next_marker = result.get('marker')
+
+        # No marker means XRPL has reached the end of this account's history.
+        if not next_marker:
+            break
+
+        # Defensive guard against a repeated marker causing an infinite loop.
+        if next_marker == marker:
+            raise RuntimeError(
+                f"XRPL pagination marker did not advance on page {page_number}"
+            )
+
+        marker = next_marker
+
+        print(
+            f"Standard scan pagination: page={page_number}, "
+            f"fetched={len(page)}, total={len(collected)}/{target}"
+        )
+
+    return {
+        'transactions': collected[:target],
+        'marker': marker if len(collected) < target else None,
+        'has_more': bool(marker) and len(collected) >= target
+    }
+
 def is_valid_missing_tag_transaction(tx_data, tx_meta, wallet_address):
     """
     ENHANCED: Blockchain-level validation to ensure transaction truly has missing tag/memo.
@@ -917,14 +979,20 @@ def scan_wallet():
         print(f"Scanning wallet: {wallet_address} with limit: {limit}")
         
         # Get account transactions
-        result = scan_transactions_batch(wallet_address, limit=limit)
-        
-        if not result:
-            return jsonify({"error": "Failed to scan wallet"}), 500
-            
+        try:
+            result = scan_transactions_up_to_limit(wallet_address, limit)
+        except Exception as scan_error:
+            print(f"Standard scan pagination error: {scan_error}")
+            return jsonify({
+                "error": f"Failed to scan wallet: {str(scan_error)}"
+            }), 502
+
         transactions = result.get('transactions', [])
-        print(f"Found {len(transactions)} transactions")
-        
+        print(
+            f"Standard scan complete: fetched {len(transactions)} "
+            f"transactions for requested limit {limit}"
+        )
+
         # Process transactions with enhanced blockchain validation
         missing_tag_txs = process_transactions_batch(transactions, wallet_address)
         
@@ -965,8 +1033,9 @@ def scan_wallet():
             "summary": summary,
             "pagination": {
                 "limit": limit,
+                "returned": len(transactions),
                 "marker": result.get('marker'),
-                "has_more": result.get('marker') is not None
+                "has_more": result.get('has_more', False)
             },
             "validation_info": {
                 "method": "XRPL blockchain verification",
