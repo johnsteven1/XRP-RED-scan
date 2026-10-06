@@ -1,16 +1,8 @@
 services:
   - type: web
-    name: xrp-scanner
+    name: xrp-red-scan-backend
     runtime: python
-    repo: https://github.com/yourusername/your-repo
-    plan: free
-    region: oregon
+    rootDir: .
     buildCommand: pip install -r requirements.txt
-    startCommand: ./run1.sh
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
-    disk:
-      name: xrp-scanner-data
-      mountPath: /tmp/xrp_scanner_data
-      sizeGB: 10
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --threads 2 --timeout 300 app:app
+    plan: free

@@ -1,5 +1,5 @@
 // API Configuration
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = 'https://xrp-red-scan-backend.onrender.com/api';
 const DEFAULT_EXPLORER = 'https://xrpscan.com/tx/';
 
 // State Management
